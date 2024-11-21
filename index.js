@@ -98,6 +98,38 @@ async function writeToSheet(objectName, fields, spreadsheetId) {
     }
 }
 
+//Main function to pull metadata and update G-sheets
+app.get ('/update-dictionary', async (req, res) => {
+    const objectToPull = ['Shift_c', 'Applications_c', 'Timecards_c'];
+    const spreadsheetId = '1AgDLT4BSKagdSSV0iLES3agv7v1P4SqNd7GMp1frQtY';
+
+    try {
+        conn.login (SF_USERNAME, SF_PASSWORD, async (err, userInfo) => {
+            if (err) {
+                console.error('Salesforce login failed:', err);
+                return res.status(500).send('Failed to loginto Salesforce.');
+            }
+            Console.log('Salesforce login succesful.');
+
+            // Fetch metadata for each object and write to Google Sheets
+            for (const objectName of objectToPull) {
+                console.log('Fetching metadata for ${objectName}...');
+                const fields = await getMetadata(objectName);
+                await writeToSheet(objectName, fields, spreadsheetId);
+            }
+
+            res.status(200).send('Data dictionary updated successfully.');
+        });    
+    } catch (error) {
+        console.error('Error updating dictionary:', error);
+        res.status(500).send('Faild to update data dictionary.');
+    }
+});
+
+app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+});
+
 
 /*
 //Test endpoint to get data from Google Sheets
