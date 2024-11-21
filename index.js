@@ -62,7 +62,7 @@ async function writeToSheet(objectName, fields, spreadsheetId) {
     ];
 
     try {
-        // // Check if the sheet/tab exists, otherwise create it
+        // Check if the sheet/tab exists, otherwise create it
         const sheetTitle = objectName;
         const sheetResponse = await sheets.spreadsheets.get({ spreadsheetId });
         const sheetExists = sheetResponse.data.sheets.some(sheet => sheet.properties.title === sheetTitle);
@@ -81,10 +81,22 @@ async function writeToSheet(objectName, fields, spreadsheetId) {
                         }
                     ]
                 }
-            })
+            });
+            await sheets.spreadsheets.values.update({
+                spreadsheetId,
+                range: `$(sheetTitle)!A1`,
+                valueInputOption: 'RAW',
+                requestBody: {
+                    values
+                }
+            });
         }
+        
+        console.log(`Data written to sheet for ${objectName}`);
+    } catch (error) {
+        console.error(`Error writing data to sheet for ${objectName}:`, error);
     }
-
+}
 
 
 /*
