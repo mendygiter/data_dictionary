@@ -22,11 +22,31 @@ const auth = new google.auth.JWT(
 const sheets = google.sheets({ version: 'v4', auth });
 
 //Salesforce Credentials
-const SF_USERNAME = process.env.SF_USERNAME;
-const SF_PASSWORD = process.env.SF_PASSWORD;
-const SF_LOGIN_URL = process.env.SF_LOGIN_URL;
+const SF_REFRESH_TOKEN = process.env.SF_REFRESH_TOKEN;
+const SF_ACCESS_TOKEN = process.env.SF_ACCESS_TOKEN;
+const SF_INSTANCE_URL = process.env.SF_INSTANCE_URL;
+const SF_CLIENT_ID = process.env.SF_CLIENT_ID;
+const SF_CLIENT_SECRET = process.env.SF_CLIENT_SECRET;
 
-const conn = new jsforce.Connection({ loginUrl: SF_LOGIN_URL });
+// Establish Salesforce connection with OAuth
+const conn = new jsforce.Connection({
+    oauth2: {
+        clientId: SF_CLIENT_ID,
+        clientSecret: SF_CLIENT_SECRET,
+        redirectUri: process.env.SF_REDIRECT_URI,
+    },
+    instanceUrl: SF_INSTANCE_URL,
+    refreshToken: SF_REFRESH_TOKEN
+});
+
+conn.on('refresh', (newAccessToken) => {
+    console.log('Access token refreshed:', newAccessToken);
+    // Store the new access token if needed
+});
+
+conn.on('error', (err) => {
+    console.error('Salesforce connection error:', err);
+});
 
 //Function to fetch metadata from Salesforce
 async function getMetadata(objectName) {
@@ -40,7 +60,7 @@ async function getMetadata(objectName) {
                     FieldName: field.name || '',
                     APIName: field.name || '',
                     HelpText: field.inlineHelpText || '',
-                    DataType: field.Type || ''
+                    DataType: field.type || ''
                 }));
                 resolve(fields);
             }
@@ -91,39 +111,57 @@ async function writeToSheet(objectName, fields, spreadsheetId) {
                 }
             });
         }
-        
+
         console.log(`Data written to sheet for ${objectName}`);
     } catch (error) {
         console.error(`Error writing data to sheet for ${objectName}:`, error);
     }
 }
 
+app.get('/', (req, res) => {
+    res.send('Welcome! Use /update-dictionary to update the data dictionary or /test-sheets to test the Google Sheets connection.');
+});
+
 //Main function to pull metadata and update G-sheets
-app.get ('/update-dictionary', async (req, res) => {
+app.get('/update-dictionary', async (req, res) => {
     const objectToPull = ['Shift_c', 'Applications_c', 'Timecards_c'];
     const spreadsheetId = '1AgDLT4BSKagdSSV0iLES3agv7v1P4SqNd7GMp1frQtY';
 
     try {
-        conn.login (SF_USERNAME, SF_PASSWORD, async (err, userInfo) => {
-            if (err) {
-                console.error('Salesforce login failed:', err);
-                return res.status(500).send('Failed to loginto Salesforce.');
-            }
-            Console.log('Salesforce login succesful.');
+        // Fetch metadata for each object and write to Google Sheets
+        for (const objectName of objectToPull) {
+            console.log('Fetching metadata for ${objectName}...');
+            const fields = await getMetadata(objectName);
+            await writeToSheet(objectName, fields, spreadsheetId);
+        }
 
-            // Fetch metadata for each object and write to Google Sheets
-            for (const objectName of objectToPull) {
-                console.log('Fetching metadata for ${objectName}...');
-                const fields = await getMetadata(objectName);
-                await writeToSheet(objectName, fields, spreadsheetId);
-            }
-
-            res.status(200).send('Data dictionary updated successfully.');
-        });    
+        res.status(200).send('Data dictionary updated successfully.');
     } catch (error) {
         console.error('Error updating dictionary:', error);
         res.status(500).send('Faild to update data dictionary.');
     }
+});
+
+app.get('/auth/salesforce', (req, res) => {
+    res.redirect(conn.oauth2.getAuthorizationUrl({ scope: 'api refresh_token' }));
+});
+
+app.get('/auth/salesforce/callback', (req, res) => {
+    const code = req.query.code;
+    
+    conn.authorize(code, (err, userInfo) => {
+        if (err) {
+            console.error('Auth error:', err);
+            return res.status(500).send(err.message);
+        }
+        
+        // Store these new tokens in your .env file
+        console.log('Access Token:', conn.accessToken);
+        console.log('Refresh Token:', conn.refreshToken);
+        console.log('Instance URL:', conn.instanceUrl);
+        
+        res.send('Authentication successful! Check your console for the tokens.');
+    });
 });
 
 app.listen(PORT, () => {
