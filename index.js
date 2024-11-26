@@ -4,7 +4,7 @@ const jsforce = require('jsforce');
 const fs = require('fs');
 const app = express();
 require('dotenv').config();
-const PORT = 3000;
+const PORT = 4000;
 
 
 // Load Google Sheets credentials
@@ -36,9 +36,18 @@ const conn = new jsforce.Connection({
         redirectUri: process.env.SF_REDIRECT_URI,
     },
     instanceUrl: SF_INSTANCE_URL,
-    refreshToken: SF_REFRESH_TOKEN
+    refreshToken: SF_REFRESH_TOKEN,
+    loginUrl: 'https://eshyft--sandbox3.sandbox.my.salesforce.com'
 });
 
+conn.oauth2.refreshToken(SF_REFRESH_TOKEN)
+    .then(results => {
+        console.log("Connected to Salesforce");
+        conn.accessToken = results.access_token;
+    })
+    .catch(err => {
+        console.error("Error connecting to Salesforce:", err);
+    });
 conn.on('refresh', (newAccessToken) => {
     console.log('Access token refreshed:', newAccessToken);
     // Store the new access token if needed
@@ -49,21 +58,27 @@ conn.on('error', (err) => {
 });
 
 //Function to fetch metadata from Salesforce
-async function getMetadata(objectName) {
+function getMetadata(objectName) {
+    console.log(`Starting metadata fetch for ${objectName}...`);
+
     return new Promise((resolve, reject) => {
         conn.sobject(objectName).describe((err, metadata) => {
             if (err) {
+                console.error(`Error fetching metadata for ${objectName}:`, err);
                 reject(err);
-            } else {
-                const fields = metadata.fields.map(field => ({
-                    FieldLabel: field.label || '',
-                    FieldName: field.name || '',
-                    APIName: field.name || '',
-                    HelpText: field.inlineHelpText || '',
-                    DataType: field.type || ''
-                }));
-                resolve(fields);
+                return;
             }
+
+            const fields = metadata.fields.map(field => ({
+                FieldLabel: field.label || '',
+                FieldName: field.name || '',
+                APIName: field.name || '',
+                HelpText: field.inlineHelpText || '',
+                DataType: field.type || ''
+            }));
+
+            console.log (`Succesfully proccessed ${fields.length} fields for ${objectName}`);
+            resolve(fields);
         });
     });
 }
@@ -82,39 +97,37 @@ async function writeToSheet(objectName, fields, spreadsheetId) {
     ];
 
     try {
-        // Check if the sheet/tab exists, otherwise create it
         const sheetTitle = objectName;
         const sheetResponse = await sheets.spreadsheets.get({ spreadsheetId });
-        const sheetExists = sheetResponse.data.sheets.some(sheet => sheet.properties.title === sheetTitle);
+        const sheetExists = sheetResponse.data.sheets.some(sheet =>
+            sheet.properties.title === sheetTitle);
 
         if (!sheetExists) {
+            // Create new sheet
             await sheets.spreadsheets.batchUpdate({
                 spreadsheetId,
                 requestBody: {
-                    requests: [
-                        {
-                            addSheet: {
-                                properties: {
-                                    title: sheetTitle
-                                }
-                            }
+                    requests: [{
+                        addSheet: {
+                            properties: { title: sheetTitle }
                         }
-                    ]
-                }
-            });
-            await sheets.spreadsheets.values.update({
-                spreadsheetId,
-                range: `$(sheetTitle)!A1`,
-                valueInputOption: 'RAW',
-                requestBody: {
-                    values
+                    }]
                 }
             });
         }
 
+        // Write data
+        await sheets.spreadsheets.values.update({
+            spreadsheetId,
+            range: `${sheetTitle}!A1`,
+            valueInputOption: 'RAW',
+            requestBody: { values }
+        });
+
         console.log(`Data written to sheet for ${objectName}`);
     } catch (error) {
         console.error(`Error writing data to sheet for ${objectName}:`, error);
+        throw error;  // Re-throw to be caught by the main error handler
     }
 }
 
@@ -124,42 +137,51 @@ app.get('/', (req, res) => {
 
 //Main function to pull metadata and update G-sheets
 app.get('/update-dictionary', async (req, res) => {
-    const objectToPull = ['Shift_c', 'Applications_c', 'Timecards_c'];
+    const objectToPull = ['Shift__c', 'Application__c', 'TimeCards__c'];
     const spreadsheetId = '1AgDLT4BSKagdSSV0iLES3agv7v1P4SqNd7GMp1frQtY';
 
     try {
-        // Fetch metadata for each object and write to Google Sheets
-        for (const objectName of objectToPull) {
-            console.log('Fetching metadata for ${objectName}...');
-            const fields = await getMetadata(objectName);
-            await writeToSheet(objectName, fields, spreadsheetId);
-        }
+        console.log('Starting metadata fetch...');
 
-        res.status(200).send('Data dictionary updated successfully.');
+        for (const objectName of objectToPull) {
+            try{
+                const fields = await getMetadata(objectName);
+                console.log(`writing ${objectName} to google sheets...`);
+                await writeToSheet(objectName, fields, spreadsheetId);
+                console.log(`completed proccessing ${objectName}`);
+            } catch (error) {
+                console.error(`Failed to process ${objectName}:`, error)
+                continue;
+            }
+        };
+        res.status(200).send('Data dictionary updated successfully');
     } catch (error) {
         console.error('Error updating dictionary:', error);
-        res.status(500).send('Faild to update data dictionary.');
+        res.status(500).send('Failed to update data dictionary: ' + error.message);
     }
 });
 
 app.get('/auth/salesforce', (req, res) => {
-    res.redirect(conn.oauth2.getAuthorizationUrl({ scope: 'api refresh_token' }));
+    res.redirect(conn.oauth2.getAuthorizationUrl({
+        scope: 'api refresh_token',
+        loginUrl: 'https://eshyft--sandbox3.sandbox.my.salesforce.com'
+    }));
 });
 
 app.get('/auth/salesforce/callback', (req, res) => {
     const code = req.query.code;
-    
+
     conn.authorize(code, (err, userInfo) => {
         if (err) {
             console.error('Auth error:', err);
             return res.status(500).send(err.message);
         }
-        
+
         // Store these new tokens in your .env file
         console.log('Access Token:', conn.accessToken);
         console.log('Refresh Token:', conn.refreshToken);
         console.log('Instance URL:', conn.instanceUrl);
-        
+
         res.send('Authentication successful! Check your console for the tokens.');
     });
 });
@@ -167,37 +189,3 @@ app.get('/auth/salesforce/callback', (req, res) => {
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
 });
-
-
-/*
-//Test endpoint to get data from Google Sheets
-app.get ('/test-sheets', async (req, res) => {
-    const spreadsheetId = '1AgDLT4BSKagdSSV0iLES3agv7v1P4SqNd7GMp1frQtY';
-    const range = 'sheet1!A2:A7';
-
-    try {
-        const response = await sheets.spreadsheets.values.get({
-            spreadsheetId,
-            range,
-        });
-        const rows = response.data.values;
-        if (rows.length) {
-            console.log('Data retrieved from Google Sheets:', rows);
-            res.status(200).json({
-                message: 'Data retrieved successfully',
-                data: rows,
-            });
-        } else {
-            console.log('No data found.');
-            res.status(200).send('No data found.')
-        }
-    } catch (error) {
-        console.error('Error fetching data from Google sheets:', error);
-        res.status(500).send('Failed to fetch data from Google sheets.');
-    }
-});
-
-app.listen (PORT, () =>{
-    console.log('Server running on http;//localhost:${PORT}');
-});
-*/
