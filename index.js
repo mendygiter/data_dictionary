@@ -62,13 +62,8 @@ function getMetadata(objectName) {
     console.log(`Starting metadata fetch for ${objectName}...`);
 
     return new Promise((resolve, reject) => {
-        conn.sobject(objectName).describe((err, metadata) => {
-            if (err) {
-                console.error(`Error fetching metadata for ${objectName}:`, err);
-                reject(err);
-                return;
-            }
-
+        conn.sobject(objectName).describe()
+        .then (metadata => {
             const fields = metadata.fields.map(field => ({
                 FieldLabel: field.label || '',
                 FieldName: field.name || '',
@@ -79,6 +74,10 @@ function getMetadata(objectName) {
 
             console.log (`Succesfully proccessed ${fields.length} fields for ${objectName}`);
             resolve(fields);
+        })
+        .catch(err => {
+            console.error(`Error fetching metadata for ${objectName}:`, err);
+            reject(err);
         });
     });
 }
@@ -144,16 +143,20 @@ app.get('/update-dictionary', async (req, res) => {
         console.log('Starting metadata fetch...');
 
         for (const objectName of objectToPull) {
-            try{
+            try {
+                console.log(`Processing ${objectName}...`);
                 const fields = await getMetadata(objectName);
-                console.log(`writing ${objectName} to google sheets...`);
+                console.log(`Got metadata for ${objectName}, field count:`, fields.length);
+                
+                console.log(`Writing ${objectName} to Google Sheets...`);
                 await writeToSheet(objectName, fields, spreadsheetId);
-                console.log(`completed proccessing ${objectName}`);
+                console.log(`Completed processing ${objectName}`);
             } catch (error) {
-                console.error(`Failed to process ${objectName}:`, error)
+                console.error(`Failed to process ${objectName}:`, error.message);
+                // Don't just continue silently, maybe we want to track failed objects
                 continue;
             }
-        };
+        }
         res.status(200).send('Data dictionary updated successfully');
     } catch (error) {
         console.error('Error updating dictionary:', error);
